@@ -1,0 +1,62 @@
+---
+- name: Ping IPs from ips.txt on remote servers (fast, single script)
+  hosts: check_servers
+  gather_facts: no
+  vars:
+    parallel_limit: 20
+  tasks:
+
+    - name: Read IP list from controller
+      local_action:
+        module: slurp
+        src: ./ips.txt
+      register: ip_file_contents
+
+    - name: Set list of IPs from comma-separated string
+      set_fact:
+        ip_list: >-
+          {{
+            ip_file_contents['content'] 
+            | b64decode 
+            | trim 
+            | split(',') 
+            | map('trim') 
+            | reject('equalto', '') 
+            | list
+          }}
+
+    - name: Ping IPs on remote server using background jobs and parallel limit
+      shell: |
+        parallel_limit={{ parallel_limit }}
+        ips=({{ ip_list | join(' ') }})
+
+        tmpfile=$(mktemp)
+        running=0
+
+        for ip in "${ips[@]}"; do
+          {
+            if timeout 2 ping -c 1 -W 1 "$ip" > /dev/null 2>&1; then
+              echo "$ip ✔️ reachable" >> "$tmpfile"
+            else
+              echo "$ip ❌ unreachable" >> "$tmpfile"
+            fi
+          } &
+
+          ((running+=1))
+          if ((running >= parallel_limit)); then
+            wait
+            running=0
+          fi
+        done
+
+        wait
+
+        sort "$tmpfile"
+        rm -f "$tmpfile"
+      args:
+        executable: /bin/bash
+      register: ping_results
+
+    - name: Show ping results
+      debug:
+        msg: "{{ ping_results.stdout_lines }}"
