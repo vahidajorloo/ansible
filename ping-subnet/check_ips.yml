@@ -1,0 +1,73 @@
+---
+- name: Check subnet accessibility from remote servers
+  hosts: check_servers
+  gather_facts: no
+  vars:
+    subnet: "{{ subnet_input }}"
+  tasks:
+
+    - name: Generate and ping IPs with parallel limit
+      shell: |
+        subnet="{{ subnet }}"
+        base_ip="${subnet%/*}"
+        subnet_mask="${subnet#*/}"
+        IFS=. read -r i1 i2 i3 i4 <<< "$base_ip"
+        ip_decimal=$((i1 * 256**3 + i2 * 256**2 + i3 * 256 + i4))
+        num_hosts=$((2**(32 - subnet_mask)))
+
+        # Skip network and broadcast if usable
+        if (( subnet_mask <= 30 )); then
+          start_ip=$((ip_decimal + 1))
+          end_ip=$((ip_decimal + num_hosts - 2))
+        else
+          start_ip=$((ip_decimal))
+          end_ip=$((ip_decimal + num_hosts - 1))
+        fi
+
+        parallel_limit=20
+        running=0
+
+        tmpfile=$(mktemp)
+        for ((ip=start_ip; ip<=end_ip; ip++)); do
+          ip_str="$((ip >> 24 & 255)).$((ip >> 16 & 255)).$((ip >> 8 & 255)).$((ip & 255))"
+
+          {
+            if timeout 2 ping -c 1 -W 1 "$ip_str" > /dev/null 2>&1; then
+              echo "$ip $ip_str ✔️ reachable" >> "$tmpfile"
+            else
+              echo "$ip $ip_str ❌ unreachable" >> "$tmpfile"
+            fi
+          } &
+
+          ((running+=1))
+          if ((running >= parallel_limit)); then
+            wait
+            running=0
+          fi
+        done
+        wait
+
+        # Sort numerically by decimal IP
+        sort -n "$tmpfile" | awk '{print $2, $3, $4}' 
+        reachable=$(grep -c '✔️ reachable' "$tmpfile")
+        unreachable=$(grep -c '❌ unreachable' "$tmpfile")
+        echo
+        echo "Summary:"
+        echo "IP address reachable: $reachable IP"
+        echo "IP address unreachable: $unreachable IP"
+        rm -f "$tmpfile"
+      args:
+        executable: /bin/bash
+      register: result
+
+    - name: Show sorted ping results with summary
+      debug:
+        var: formatted_output
+      vars:
+        formatted_output: >-
+          {% set header = "Results from " ~ inventory_hostname %}
+          {% set lines = result.stdout_lines %}
+          {% set summary_index = lines.index("Summary:") %}
+          {% set results = lines[:summary_index] %}
+          {% set summary = lines[summary_index:] %}
+          {{ [header, '-' * header|length] + results + [""] + summary }}
