@@ -1,4 +1,4 @@
-this playbook ping the whole subnet that you gave it from remote servers in inventory file.
+this playbook ping the whole subnet that you gave it from remote servers in inventory file under <check_servers> group.
 
 how to run:
 
